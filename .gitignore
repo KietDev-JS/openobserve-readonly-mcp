@@ -1,0 +1,17 @@
+node_modules/
+*.tgz
+pack.json
+
+# Credentials must never be committed.
+.env
+.env.*
+!.env.example
+
+coverage/
+*.log
+npm-debug.log*
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

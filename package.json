@@ -1,0 +1,52 @@
+{
+  "name": "openobserve-readonly-mcp",
+  "version": "1.0.0",
+  "description": "Read-only MCP server for OpenObserve: list streams, inspect schemas, and run bounded SQL log searches",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openobserve",
+    "observability",
+    "logs",
+    "read-only",
+    "llm",
+    "claude"
+  ],
+  "homepage": "https://github.com/KietDev-JS/openobserve-readonly-mcp#readme",
+  "bugs": "https://github.com/KietDev-JS/openobserve-readonly-mcp/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KietDev-JS/openobserve-readonly-mcp.git"
+  },
+  "license": "MIT",
+  "author": "KietDev-JS",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "openobserve-readonly-mcp": "bin/openobserve-readonly-mcp.mjs"
+  },
+  "exports": {
+    ".": "./src/server.mjs",
+    "./config": "./src/config.mjs",
+    "./client": "./src/client.mjs",
+    "./tools": "./src/tools.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "test:coverage": "node --test --experimental-test-coverage \"test/**/*.test.mjs\"",
+    "start": "node bin/openobserve-readonly-mcp.mjs"
+  },
+  "dependencies": {},
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (node${{ matrix.node }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['18', '20', '22', '24']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Verify no runtime dependencies
+        shell: bash
+        run: |
+          deps=$(node -p "Object.keys(require('./package.json').dependencies || {}).length")
+          test "$deps" -eq 0 || { echo "expected zero runtime dependencies, found $deps"; exit 1; }
+      - run: npm test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: npm run test:coverage
+
+  startup:
+    name: Startup contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Exits 2 without configuration
+        run: |
+          set +e
+          output=$(node bin/openobserve-readonly-mcp.mjs 2>&1)
+          code=$?
+          set -e
+          echo "$output"
+          test "$code" -eq 2 || { echo "expected exit 2, got $code"; exit 1; }
+          echo "$output" | grep -q "O2_BASE_URL" || { echo "message should name the missing variable"; exit 1; }
+
+      - name: Exits 2 without credentials
+        run: |
+          set +e
+          output=$(O2_BASE_URL=https://o2.example.com node bin/openobserve-readonly-mcp.mjs 2>&1)
+          code=$?
+          set -e
+          test "$code" -eq 2 || { echo "expected exit 2, got $code"; exit 1; }
+          echo "$output" | grep -q "O2_AUTH" || exit 1
+
+      - name: Responds to tools/list over stdio
+        env:
+          O2_BASE_URL: https://o2.example.com
+          O2_AUTH: Basic ZHVtbXk6ZHVtbXk=
+        run: |
+          out=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node bin/openobserve-readonly-mcp.mjs)
+          echo "$out"
+          echo "$out" | node -e '
+            let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+              const m=JSON.parse(s.trim());
+              if(m.result.tools.length!==3) throw new Error("expected 3 tools");
+              for (const t of m.result.tools) {
+                if (t.annotations.readOnlyHint !== true) throw new Error(t.name+" is not read-only");
+              }
+              console.log("ok: 3 read-only tools");
+            });'
+
+  package:
+    name: Package contents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Pack and inspect
+        run: |
+          npm pack --dry-run
+          npm pack --json > pack.json
+          node -e '
+            const f=require("./pack.json")[0].files.map(x=>x.path);
+            const must=["package.json","README.md","LICENSE","bin/openobserve-readonly-mcp.mjs","src/server.mjs"];
+            for (const m of must) if(!f.includes(m)) throw new Error("missing from tarball: "+m);
+            const leaked=f.filter(p=>p.startsWith("test/")||p.endsWith(".env"));
+            if(leaked.length) throw new Error("should not be published: "+leaked.join(", "));
+            console.log("tarball ok:", f.length, "files");
+          '
+      - name: Verify the installed binary runs
+        run: |
+          npm pack
+          tarball=$(ls *.tgz)
+          mkdir -p /tmp/consumer && cd /tmp/consumer && npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/$tarball"
+          set +e
+          ./node_modules/.bin/openobserve-readonly-mcp
+          code=$?
+          set -e
+          test "$code" -eq 2 || { echo "installed binary should exit 2 unconfigured, got $code"; exit 1; }
+          echo "installed binary behaves correctly"
