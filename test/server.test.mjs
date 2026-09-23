@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { makeClient, reply, streamList } from './helpers.mjs';
+import { makeClient, reply, streamList } from '../test-utils/helpers.mjs';
 import { createServer, listen, SUPPORTED_PROTOCOLS, SERVER_INFO } from '../src/server.mjs';
 import { TOOLS } from '../src/tools.mjs';
 

@@ -41,8 +41,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test \"test/**/*.test.mjs\"",
-    "test:coverage": "node --test --experimental-test-coverage \"test/**/*.test.mjs\"",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
     "start": "node bin/openobserve-readonly-mcp.mjs"
   },
   "dependencies": {},

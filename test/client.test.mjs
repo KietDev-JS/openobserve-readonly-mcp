@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeClient, reply, TEST_ENV } from './helpers.mjs';
+import { makeClient, reply, TEST_ENV } from '../test-utils/helpers.mjs';
 import { O2Error } from '../src/client.mjs';
 
 describe('endpoint allowlist', () => {

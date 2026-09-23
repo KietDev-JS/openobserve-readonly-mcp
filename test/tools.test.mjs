@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeClient, streamList, TEST_ENV } from './helpers.mjs';
+import { makeClient, streamList, TEST_ENV } from '../test-utils/helpers.mjs';
 import { ToolError, timeWindow, TOOLS } from '../src/tools.mjs';
 import { SqlError } from '../src/sql.mjs';
 
