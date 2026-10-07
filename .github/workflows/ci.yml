@@ -82,6 +82,23 @@ jobs:
               console.log("ok: 3 read-only tools");
             });'
 
+      - name: --version matches package.json
+        run: |
+          v=$(node bin/openobserve-readonly-mcp.mjs --version)
+          want=$(node -p "require('./package.json').version")
+          test "$v" = "$want" || { echo "--version printed '$v', package.json says '$want'"; exit 1; }
+
+      - name: Rejects unknown tool arguments
+        env:
+          O2_BASE_URL: https://o2.example.com
+          O2_AUTH: Basic ZHVtbXk6ZHVtbXk=
+        run: |
+          out=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"o2_list_streams","arguments":{"limt":5}}}' \
+            | node bin/openobserve-readonly-mcp.mjs)
+          echo "$out"
+          echo "$out" | grep -q '"isError":true' || exit 1
+          echo "$out" | grep -q 'unknown argument' || exit 1
+
   package:
     name: Package contents
     runs-on: ubuntu-latest

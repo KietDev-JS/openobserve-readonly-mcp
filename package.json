@@ -1,6 +1,6 @@
 {
   "name": "openobserve-readonly-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Read-only MCP server for OpenObserve: list streams, inspect schemas, and run bounded SQL log searches",
   "keywords": [
     "mcp",

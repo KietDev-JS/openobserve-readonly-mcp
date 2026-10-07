@@ -113,6 +113,24 @@ describe('error reporting', () => {
     await assert.rejects(() => client.request('GET', '/api/default/streams'), /timed out/);
   });
 
+  test('reports a timeout during the body read as O2Error, not an unexpected error', async () => {
+    const err = new Error('The operation was aborted due to timeout');
+    err.name = 'TimeoutError';
+    const { client } = makeClient(reply({ textError: err }));
+    await assert.rejects(
+      () => client.request('GET', '/api/default/streams'),
+      (e) => e instanceof O2Error && /timed out after/.test(e.message),
+    );
+  });
+
+  test('reports a connection reset during the body read as O2Error', async () => {
+    const { client } = makeClient(reply({ textError: new TypeError('terminated') }));
+    await assert.rejects(
+      () => client.request('GET', '/api/default/streams'),
+      (e) => e instanceof O2Error && /interrupted while reading/.test(e.message),
+    );
+  });
+
   test('truncates oversized error bodies', async () => {
     const { client } = makeClient(reply({ status: 500, text: 'e'.repeat(10_000) }));
     await assert.rejects(

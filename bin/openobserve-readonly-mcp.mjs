@@ -3,9 +3,30 @@
 
 import { loadConfig, ConfigError, redact } from '../src/config.mjs';
 import { O2Client } from '../src/client.mjs';
-import { createServer, listen } from '../src/server.mjs';
+import { createServer, listen, SERVER_INFO } from '../src/server.mjs';
 
-function main() {
+const HELP = `${SERVER_INFO.name} ${SERVER_INFO.version}
+
+A read-only MCP stdio server for OpenObserve. Configure with environment variables:
+
+  O2_BASE_URL        required, e.g. https://openobserve.example.com
+  O2_AUTH            required, "Basic <base64 email:password>" or "Bearer <token>"
+  O2_ORG             organization (default: default)
+  O2_MAX_WINDOW_MIN  largest search window in minutes (default: 1440)
+  O2_TIMEOUT_MS      upstream request timeout (default: 60000)
+  O2_DEBUG           log resolved config to stderr, credential redacted
+`;
+
+function main(argv = process.argv.slice(2)) {
+  if (argv.includes('--version') || argv.includes('-v')) {
+    process.stdout.write(`${SERVER_INFO.version}\n`);
+    return;
+  }
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(HELP);
+    return;
+  }
+
   let config;
   try {
     config = loadConfig(process.env);

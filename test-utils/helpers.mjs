@@ -40,7 +40,11 @@ export function makeClient(responder, env = TEST_ENV) {
     return {
       ok: (r.status ?? 200) >= 200 && (r.status ?? 200) < 300,
       status: r.status ?? 200,
-      text: async () => text,
+      text: async () => {
+        // Simulates a failure while the body is streaming (timeout, reset).
+        if (r.textError) throw r.textError;
+        return text;
+      },
     };
   };
   const client = new O2Client(loadConfig(env), { fetch: fetchImpl });

@@ -46,6 +46,11 @@ bounds what is attempted.
 
 All three are annotated `readOnlyHint: true`.
 
+Arguments are checked against each tool's schema on the server side too, since
+clients don't have to validate them. An unknown or misspelled argument (`limt`,
+`minute`) gets an error that lists the expected names. It is not dropped
+silently, where it would quietly run the query with defaults.
+
 ## Install
 
 Requires Node.js 18.17 or newer.
@@ -82,6 +87,9 @@ your credentials.
 | `O2_MAX_WINDOW_MIN` | no | `1440` | Largest allowed search window, in minutes. |
 | `O2_TIMEOUT_MS` | no | `60000` | Upstream request timeout. |
 | `O2_DEBUG` | no | — | Log the resolved config (credential redacted) to stderr. |
+
+`openobserve-readonly-mcp --help` prints this list; `--version` prints the
+package version.
 
 Generate the Basic value with:
 
@@ -178,7 +186,7 @@ reported rather than silent.
 ## Development
 
 ```bash
-npm test              # 141 tests, no network access required
+npm test              # 149 tests, no network access required
 npm run test:coverage # ~98% line coverage
 ```
 

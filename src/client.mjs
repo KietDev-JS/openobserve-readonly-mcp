@@ -57,7 +57,11 @@ export class O2Client {
     }
     for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, String(v));
 
+    // The timeout signal stays armed while the body is read, so both the
+    // request and the body read can fail with it; both must map to O2Error or
+    // a slow response surfaces as an opaque "Unexpected error".
     let res;
+    let text;
     try {
       res = await this.fetchImpl(url, {
         method,
@@ -70,13 +74,14 @@ export class O2Client {
         signal: AbortSignal.timeout(this.config.timeoutMs),
       });
     } catch (e) {
-      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
-        throw new O2Error(`request to OpenObserve timed out after ${this.config.timeoutMs}ms`);
-      }
-      throw new O2Error(`cannot reach OpenObserve at ${this.config.origin}: ${e?.message || e}`);
+      throw this.transportError(e, `cannot reach OpenObserve at ${this.config.origin}`);
+    }
+    try {
+      text = await res.text();
+    } catch (e) {
+      throw this.transportError(e, 'connection to OpenObserve was interrupted while reading the response');
     }
 
-    const text = await res.text();
     if (!res.ok) {
       throw new O2Error(explainStatus(res.status, text), { status: res.status, body: text.slice(0, 500) });
     }
@@ -85,6 +90,14 @@ export class O2Client {
     } catch {
       throw new O2Error(`OpenObserve returned a non-JSON response (HTTP ${res.status})`, { status: res.status });
     }
+  }
+
+  /** Map a fetch/body-read failure to an O2Error. */
+  transportError(e, prefix) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      return new O2Error(`request to OpenObserve timed out after ${this.config.timeoutMs}ms`);
+    }
+    return new O2Error(`${prefix}: ${e?.message || e}`);
   }
 }
 

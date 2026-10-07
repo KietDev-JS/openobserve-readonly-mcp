@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
+import { readFileSync } from 'node:fs';
 import { makeClient, reply, streamList } from '../test-utils/helpers.mjs';
 import { createServer, listen, SUPPORTED_PROTOCOLS, SERVER_INFO } from '../src/server.mjs';
 import { TOOLS } from '../src/tools.mjs';
@@ -111,6 +112,42 @@ describe('tools/call', () => {
     assert.ok(!JSON.stringify(sent[0]).includes('ZHVtbXk'));
   });
 
+  test('rejects unknown arguments instead of silently ignoring them', async () => {
+    const { handle, sent, calls } = harness(streamList(3));
+    await handle({ id: 12, method: 'tools/call', params: { name: 'o2_list_streams', arguments: { limt: 5 } } });
+    assert.equal(sent[0].result.isError, true);
+    assert.match(sent[0].result.content[0].text, /unknown argument\(s\) for o2_list_streams: limt/);
+    assert.match(sent[0].result.content[0].text, /Expected: filter, type, limit/);
+    assert.equal(calls.length, 0, 'a rejected call must not reach the network');
+  });
+
+  test('rejects non-object arguments', async () => {
+    for (const bad of [[1, 2], 'SELECT 1', 42]) {
+      const { handle, sent } = harness({});
+      await handle({ id: 13, method: 'tools/call', params: { name: 'o2_search', arguments: bad } });
+      assert.equal(sent[0].result.isError, true);
+      assert.match(sent[0].result.content[0].text, /arguments must be a JSON object/);
+    }
+  });
+
+  test('treats missing or null arguments as empty', async () => {
+    const { handle, sent } = harness(streamList(1));
+    await handle({ id: 14, method: 'tools/call', params: { name: 'o2_list_streams', arguments: null } });
+    assert.ok(!sent[0].result.isError);
+  });
+
+  test('does not resolve inherited properties as tool names', async () => {
+    const { handle, sent } = harness({});
+    await handle({ id: 15, method: 'tools/call', params: { name: 'constructor', arguments: {} } });
+    assert.match(sent[0].result.content[0].text, /Unknown tool: constructor/);
+  });
+
+  test('reports the package version in serverInfo', async () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.equal(SERVER_INFO.version, pkg.version);
+    assert.equal(SERVER_INFO.name, pkg.name);
+  });
+
   test('bounds oversized results and still returns valid JSON', async () => {
     const { handle, sent } = harness(streamList(5000));
     await handle({ id: 11, method: 'tools/call', params: { name: 'o2_list_streams', arguments: { limit: 500 } } });
@@ -152,6 +189,19 @@ describe('stdio framing', () => {
   test('ignores blank lines', async () => {
     const out = await drive(['', '   ', JSON.stringify({ id: 1, method: 'ping' })]);
     assert.equal(out.length, 1);
+  });
+
+  test('stops writing after stdout errors (client went away) instead of crashing', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const writes = [];
+    output.write = (s) => writes.push(s);
+    const { send } = listen(() => {}, { input, output });
+    send({ id: 1, result: {} });
+    output.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    send({ id: 2, result: {} });
+    assert.equal(writes.length, 1);
+    input.end();
   });
 
   test('keeps serving after a parse error', async () => {
