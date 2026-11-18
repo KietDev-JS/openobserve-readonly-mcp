@@ -71,6 +71,47 @@ describe('checkSql blocks writes and statement injection', () => {
   }
 });
 
+describe('checkSql tracks both quote styles together', () => {
+  test('rejects a statement hidden between apostrophes in quoted identifiers', () => {
+    // Regression: blanking single quotes first paired the two apostrophes
+    // across the identifiers and hid the DROP between them.
+    assert.throws(() => checkSql(`SELECT "'" ; DROP TABLE x ; SELECT "'"`), SqlError);
+  });
+
+  test('rejects a keyword after an identifier containing an apostrophe', () => {
+    assert.throws(() => checkSql(`SELECT "it's" FROM "l" UNION DELETE FROM x WHERE a = 'b'`), SqlError);
+  });
+
+  const ok = [
+    ['apostrophe in a quoted identifier', `SELECT "it's" FROM "logs" WHERE a = 'b'`],
+    ['double quote in a literal', `SELECT * FROM "logs" WHERE msg = 'say "hi"'`],
+    ['escaped JSON in a literal', `SELECT * FROM "logs" WHERE msg LIKE '%\\"user\\":%'`],
+    ['backslash in a literal', `SELECT * FROM "logs" WHERE path = 'C:\\temp\\app'`],
+  ];
+  for (const [name, sql] of ok) {
+    test(`accepts ${name}`, () => assert.doesNotThrow(() => checkSql(sql)));
+  }
+});
+
+describe('checkSql closes remaining gaps', () => {
+  test('rejects SELECT INTO, which creates a table', () => {
+    assert.throws(() => checkSql('SELECT * INTO t2 FROM "logs"'), /INTO/);
+  });
+
+  test('rejects a backslash before the closing quote as ambiguous', () => {
+    assert.throws(() => checkSql(`SELECT '\\'' ; DROP TABLE x ; --'`), /doubling/);
+  });
+
+  test('tells the model how to use a reserved word as a column', () => {
+    assert.throws(() => checkSql('SELECT set FROM "logs"'), /wrap it in double quotes/);
+    assert.doesNotThrow(() => checkSql('SELECT "set" FROM "logs"'));
+  });
+
+  test('rejects oversized statements', () => {
+    assert.throws(() => checkSql(`SELECT '${'x'.repeat(70_000)}'`), /character limit/);
+  });
+});
+
 describe('checkSql input validation', () => {
   for (const bad of [undefined, null, '', '   ', 42, {}, []]) {
     test(`rejects ${JSON.stringify(bad)}`, () => assert.throws(() => checkSql(bad), SqlError));

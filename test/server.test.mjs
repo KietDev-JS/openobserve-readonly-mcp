@@ -2,9 +2,11 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { readFileSync } from 'node:fs';
-import { makeClient, reply, streamList } from '../test-utils/helpers.mjs';
+import { makeClient, reply, streamList, TEST_ENV } from '../test-utils/helpers.mjs';
 import { createServer, listen, SUPPORTED_PROTOCOLS, SERVER_INFO } from '../src/server.mjs';
 import { TOOLS } from '../src/tools.mjs';
+import { O2Client } from '../src/client.mjs';
+import { loadConfig } from '../src/config.mjs';
 
 /** Collect every message a handler emits for the given inputs. */
 function harness(responder) {
@@ -154,6 +156,72 @@ describe('tools/call', () => {
     const text = sent[0].result.content[0].text;
     assert.ok(text.length <= 60_000);
     assert.doesNotThrow(() => JSON.parse(text));
+  });
+});
+
+describe('cancellation', () => {
+  /** A server whose upstream call hangs until it is aborted. */
+  function hangingServer() {
+    const sent = [];
+    const started = {};
+    started.promise = new Promise((resolve) => {
+      started.resolve = resolve;
+    });
+    const fetch = (_url, init) =>
+      new Promise((_, reject) => {
+        started.resolve();
+        init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    const client = new O2Client(loadConfig(TEST_ENV), { fetch });
+    return { handle: createServer(client, (m) => sent.push(m)), sent, started };
+  }
+
+  test('notifications/cancelled aborts the call and suppresses its response', async () => {
+    const { handle, sent, started } = hangingServer();
+    const call = handle({ id: 21, method: 'tools/call', params: { name: 'o2_list_streams', arguments: {} } });
+    await started.promise;
+    await handle({ method: 'notifications/cancelled', params: { requestId: 21, reason: 'user' } });
+    await call;
+    assert.equal(sent.length, 0);
+  });
+
+  test('cancelling an unknown request is ignored', async () => {
+    const { handle, sent } = harness({});
+    await handle({ method: 'notifications/cancelled', params: { requestId: 999 } });
+    await handle({ method: 'notifications/cancelled' });
+    assert.equal(sent.length, 0);
+  });
+
+  test('other calls keep running when one is cancelled', async () => {
+    const { handle, sent } = harness(streamList(1));
+    await handle({ method: 'notifications/cancelled', params: { requestId: 1 } });
+    await handle({ id: 2, method: 'tools/call', params: { name: 'o2_list_streams', arguments: {} } });
+    assert.equal(sent.length, 1);
+    assert.ok(!sent[0].result.isError);
+  });
+});
+
+describe('notifications carrying a request method', () => {
+  test('a tools/call without an id gets no response', async () => {
+    const { handle, sent } = harness(streamList(1));
+    await handle({ method: 'tools/call', params: { name: 'o2_list_streams', arguments: {} } });
+    await handle({ method: 'ping' });
+    assert.equal(sent.length, 0);
+  });
+});
+
+describe('agent guidance', () => {
+  test('initialize explains the intended workflow', async () => {
+    const { handle, sent } = harness({});
+    await handle({ id: 1, method: 'initialize', params: {} });
+    assert.match(sent[0].result.instructions, /o2_list_streams.*o2_stream_schema.*o2_search/);
+  });
+
+  test('a tool error never contains the configured credential', async () => {
+    const { handle, sent } = harness(() => new Error(`boom ${TEST_ENV.O2_AUTH}`));
+    await handle({ id: 22, method: 'tools/call', params: { name: 'o2_list_streams', arguments: {} } });
+    assert.equal(sent[0].result.isError, true);
+    assert.ok(!sent[0].result.content[0].text.includes('ZHVtbXk'));
   });
 });
 

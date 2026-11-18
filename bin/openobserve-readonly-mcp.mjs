@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Entry point: load config, build the client, serve MCP over stdio.
 
-import { loadConfig, ConfigError, redact } from '../src/config.mjs';
+import { loadConfig, ConfigError, insecureTransportWarning, redact } from '../src/config.mjs';
 import { O2Client } from '../src/client.mjs';
 import { createServer, listen, SERVER_INFO } from '../src/server.mjs';
 
@@ -13,7 +13,9 @@ A read-only MCP stdio server for OpenObserve. Configure with environment variabl
   O2_AUTH            required, "Basic <base64 email:password>" or "Bearer <token>"
   O2_ORG             organization (default: default)
   O2_MAX_WINDOW_MIN  largest search window in minutes (default: 1440)
-  O2_TIMEOUT_MS      upstream request timeout (default: 60000)
+  O2_TIMEOUT_MS      upstream time limit per call, retries included (default: 60000)
+  O2_MAX_RETRIES     retries after a transient failure, 0 to 5 (default: 2)
+  O2_REDACT          redact credentials found in log rows, on or off (default: on)
   O2_DEBUG           log resolved config to stderr, credential redacted
 `;
 
@@ -37,6 +39,9 @@ function main(argv = process.argv.slice(2)) {
     }
     throw e;
   }
+
+  const warning = insecureTransportWarning(config);
+  if (warning) process.stderr.write(`openobserve-readonly-mcp: warning: ${warning}\n`);
 
   if (process.env.O2_DEBUG) {
     process.stderr.write(`openobserve-readonly-mcp config: ${JSON.stringify(redact(config))}\n`);

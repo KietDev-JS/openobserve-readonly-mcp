@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig, ConfigError, redact } from '../src/config.mjs';
+import { loadConfig, ConfigError, insecureTransportWarning, redact } from '../src/config.mjs';
 
 const BASE = { O2_BASE_URL: 'https://o2.example.com', O2_AUTH: 'Basic ZHVtbXk6ZHVtbXk=' };
 
@@ -88,6 +88,61 @@ describe('loadConfig org and numeric settings', () => {
   test('rejects a non-positive or fractional window', () => {
     for (const v of ['0', '-5', 'abc', '1.5']) {
       assert.throws(() => loadConfig({ ...BASE, O2_MAX_WINDOW_MIN: v }), ConfigError, `should reject ${v}`);
+    }
+  });
+});
+
+describe('loadConfig protects credentials in the base URL', () => {
+  test('rejects a URL with embedded credentials', () => {
+    assert.throws(() => loadConfig({ ...BASE, O2_BASE_URL: 'https://user:hunter2@o2.example.com' }), /must not contain credentials/);
+  });
+
+  test('does not echo a malformed URL, which may hold a password', () => {
+    assert.throws(
+      () => loadConfig({ ...BASE, O2_BASE_URL: 'https://user:hunter2@ bad host' }),
+      (e) => e instanceof ConfigError && !e.message.includes('hunter2'),
+    );
+  });
+});
+
+describe('loadConfig retry, timeout and redaction settings', () => {
+  test('defaults to two retries and redaction on', () => {
+    const c = loadConfig(BASE);
+    assert.equal(c.maxRetries, 2);
+    assert.equal(c.redactSecrets, true);
+  });
+
+  test('accepts O2_MAX_RETRIES from 0 to 5', () => {
+    assert.equal(loadConfig({ ...BASE, O2_MAX_RETRIES: '0' }).maxRetries, 0);
+    assert.equal(loadConfig({ ...BASE, O2_MAX_RETRIES: '5' }).maxRetries, 5);
+  });
+
+  test('rejects an invalid O2_MAX_RETRIES', () => {
+    for (const v of ['-1', '6', '1.5', 'abc']) {
+      assert.throws(() => loadConfig({ ...BASE, O2_MAX_RETRIES: v }), ConfigError, `should reject ${v}`);
+    }
+  });
+
+  test('rejects a timeout too large for a timer', () => {
+    assert.throws(() => loadConfig({ ...BASE, O2_TIMEOUT_MS: '2147483648' }), ConfigError);
+  });
+
+  test('O2_REDACT accepts on and off only', () => {
+    assert.equal(loadConfig({ ...BASE, O2_REDACT: 'OFF' }).redactSecrets, false);
+    assert.equal(loadConfig({ ...BASE, O2_REDACT: 'on' }).redactSecrets, true);
+    assert.throws(() => loadConfig({ ...BASE, O2_REDACT: 'maybe' }), ConfigError);
+  });
+});
+
+describe('insecureTransportWarning', () => {
+  test('warns about plain http to a remote host', () => {
+    const c = loadConfig({ ...BASE, O2_BASE_URL: 'http://o2.example.com' });
+    assert.match(insecureTransportWarning(c), /unencrypted/);
+  });
+
+  test('stays quiet for https and loopback', () => {
+    for (const url of ['https://o2.example.com', 'http://localhost:5080', 'http://127.0.0.1:5080', 'http://[::1]:5080']) {
+      assert.equal(insecureTransportWarning(loadConfig({ ...BASE, O2_BASE_URL: url })), null, url);
     }
   });
 });

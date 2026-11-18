@@ -2,7 +2,8 @@
 
 import { LIMITS, STREAM_TYPES } from './config.mjs';
 import { checkSql } from './sql.mjs';
-import { clipDeep, withIsoTime } from './sanitize.mjs';
+import { isoFromMicros, shapeRow, withIsoTime } from './sanitize.mjs';
+import { O2Error } from './client.mjs';
 
 export class ToolError extends Error {
   constructor(message) {
@@ -49,6 +50,26 @@ function streamName(value) {
 }
 
 /**
+ * Read an array field from an upstream response. A missing field is an empty
+ * result; any other shape means the response is not what this server expects,
+ * and saying so beats failing later with an opaque TypeError.
+ */
+function upstreamArray(data, field, what) {
+  if (!isRecord(data)) {
+    throw new O2Error(`OpenObserve returned an unexpected ${what} response: expected a JSON object`);
+  }
+  const value = data[field] ?? [];
+  if (!Array.isArray(value)) {
+    throw new O2Error(`OpenObserve returned an unexpected ${what} response: "${field}" is not an array`);
+  }
+  return value;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
  * Resolve the query time window.
  * @param {Record<string, unknown>} args
  * @param {number} maxWindowMin
@@ -66,7 +87,9 @@ export function timeWindow(args, maxWindowMin) {
     if (!Number.isFinite(minutes) || minutes <= 0) {
       throw new ToolError(`minutes must be a positive number, got: ${args.minutes}`);
     }
-    start = end - minutes * 60_000;
+    // Whole milliseconds keep the microsecond timestamps sent upstream integral
+    // when minutes is fractional.
+    start = Math.round(end - minutes * 60_000);
   }
 
   if (start >= end) throw new ToolError('invalid time range: start must be before end');
@@ -83,7 +106,9 @@ export function timeWindow(args, maxWindowMin) {
 export const TOOLS = [
   {
     name: 'o2_list_streams',
-    description: 'List OpenObserve streams (read-only) with type, document count and last event time.',
+    description:
+      'List OpenObserve streams (read-only) with type, document count and last event time. ' +
+      'Start here to find the exact stream name. When has_more is true, call again with offset set to next_offset.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -94,6 +119,12 @@ export const TOOLS = [
           minimum: 1,
           maximum: LIMITS.MAX_STREAMS,
           description: `Max streams to return (default ${LIMITS.DEFAULT_STREAMS}).`,
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          maximum: LIMITS.MAX_OFFSET,
+          description: 'Matching streams to skip (default 0). Use next_offset from the previous result.',
         },
       },
       additionalProperties: false,
@@ -120,7 +151,10 @@ export const TOOLS = [
       'Run one read-only SQL SELECT/WITH query against OpenObserve. Quote the stream name: ' +
       'SELECT * FROM "stream" ORDER BY _timestamp DESC. ' +
       `Defaults to the last ${LIMITS.DEFAULT_MINUTES} minutes and returns at most ${LIMITS.MAX_ROWS} rows. ` +
-      'No semicolons or SQL comments outside string literals.',
+      'Set the time range with minutes or start/end. ' +
+      'When has_more is true, call again with offset set to next_offset. ' +
+      'No semicolons or SQL comments outside string literals. ' +
+      'Values that look like credentials are returned as [REDACTED].',
     inputSchema: {
       type: 'object',
       properties: {
@@ -133,6 +167,12 @@ export const TOOLS = [
           minimum: 1,
           maximum: LIMITS.MAX_ROWS,
           description: `Rows to return (default ${LIMITS.DEFAULT_SIZE}).`,
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          maximum: LIMITS.MAX_OFFSET,
+          description: 'Rows to skip (default 0). Use next_offset from the previous result.',
         },
         type: { type: 'string', enum: STREAM_TYPES, description: 'Stream type (default logs).' },
       },
@@ -147,66 +187,86 @@ export const TOOLS = [
  * @param {import('./client.mjs').O2Client} client
  */
 export function createHandlers(client) {
-  const { apiPrefix, maxWindowMin } = client.config;
+  const { apiPrefix, maxWindowMin, redactSecrets } = client.config;
 
   return {
-    async o2_list_streams(args) {
+    async o2_list_streams(args, { signal } = {}) {
       const limit = intArg(args.limit, {
         name: 'limit',
         min: 1,
         max: LIMITS.MAX_STREAMS,
         fallback: LIMITS.DEFAULT_STREAMS,
       });
+      const offset = intArg(args.offset, { name: 'offset', min: 0, max: LIMITS.MAX_OFFSET, fallback: 0 });
       const wantType = args.type === undefined ? undefined : streamType(args.type);
       const needle = args.filter === undefined ? '' : String(args.filter).toLowerCase();
 
-      const data = await client.request('GET', `${apiPrefix}/streams`);
-      let list = Array.isArray(data.list) ? data.list : [];
+      const data = await client.request('GET', `${apiPrefix}/streams`, undefined, undefined, { signal });
+      let list = upstreamArray(data, 'list', 'stream list').filter(isRecord);
       if (wantType) list = list.filter((s) => s.stream_type === wantType);
       if (needle) list = list.filter((s) => String(s.name ?? '').toLowerCase().includes(needle));
 
+      const page = list.slice(offset, offset + limit);
+      const next = offset + page.length;
+      const hasMore = next < list.length;
+
       return {
         matched: list.length,
-        returned: Math.min(list.length, limit),
-        streams: list.slice(0, limit).map((s) => ({
+        offset,
+        returned: page.length,
+        has_more: hasMore,
+        ...(hasMore ? { next_offset: next } : {}),
+        streams: page.map((s) => ({
           name: s.name,
           type: s.stream_type,
           docs: s.stats?.doc_num,
-          last_event: s.stats?.doc_time_max ? new Date(s.stats.doc_time_max / 1000).toISOString() : null,
+          last_event: isoFromMicros(s.stats?.doc_time_max),
         })),
       };
     },
 
-    async o2_stream_schema(args) {
+    async o2_stream_schema(args, { signal } = {}) {
       const stream = streamName(args.stream);
       const type = streamType(args.type);
-      const data = await client.request('GET', `${apiPrefix}/streams/${stream}/schema`, { type });
+      const data = await client.request('GET', `${apiPrefix}/streams/${stream}/schema`, { type }, undefined, { signal });
+      const fields = upstreamArray(data, 'schema', 'stream schema').filter(isRecord);
       return {
         stream: data.name ?? stream,
         type: data.stream_type ?? type,
-        fields: (data.schema || []).map((f) => ({ name: f.name, type: f.type })),
+        fields: fields.map((f) => ({ name: f.name, type: f.type })),
       };
     },
 
-    async o2_search(args) {
+    async o2_search(args, { signal } = {}) {
       const sql = checkSql(args.sql);
       const type = streamType(args.type);
       const { start, end } = timeWindow(args, maxWindowMin);
       const size = intArg(args.size, { name: 'size', min: 1, max: LIMITS.MAX_ROWS, fallback: LIMITS.DEFAULT_SIZE });
+      const offset = intArg(args.offset, { name: 'offset', min: 0, max: LIMITS.MAX_OFFSET, fallback: 0 });
 
       const data = await client.request(
         'POST',
         `${apiPrefix}/_search`,
         { type },
         // OpenObserve expects microseconds since epoch.
-        { query: { sql, start_time: start * 1000, end_time: end * 1000, from: 0, size } },
+        { query: { sql, start_time: start * 1000, end_time: end * 1000, from: offset, size } },
+        { signal },
       );
+      const hits = upstreamArray(data, 'hits', 'search');
+      const next = offset + hits.length;
+      // `total` may only count the returned page, so a full page also signals
+      // that more rows can exist. The worst case is one extra, empty page.
+      const hasMore = hits.length > 0 && (hits.length >= size || (typeof data.total === 'number' && next < data.total));
 
       return {
         window: { start: new Date(start).toISOString(), end: new Date(end).toISOString() },
         total: data.total,
         took_ms: data.took,
-        hits: (data.hits || []).map((row) => clipDeep(withIsoTime(row))),
+        offset,
+        returned: hits.length,
+        has_more: hasMore,
+        ...(hasMore ? { next_offset: next } : {}),
+        hits: hits.map((row) => shapeRow(withIsoTime(row), { redact: redactSecrets })),
       };
     },
   };

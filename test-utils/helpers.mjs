@@ -16,7 +16,7 @@ export const TEST_ENV = {
  * indistinguishable from a JSON body that happens to have those keys, and the
  * fake would silently return it as a 200.
  *
- * @param {{ status?: number, text?: string, body?: unknown }} spec
+ * @param {{ status?: number, text?: string, body?: unknown, headers?: Record<string, string> }} spec
  */
 export function reply(spec) {
   return { __httpResponse: true, ...spec };
@@ -40,6 +40,7 @@ export function makeClient(responder, env = TEST_ENV) {
     return {
       ok: (r.status ?? 200) >= 200 && (r.status ?? 200) < 300,
       status: r.status ?? 200,
+      headers: new Headers(r.headers ?? {}),
       text: async () => {
         // Simulates a failure while the body is streaming (timeout, reset).
         if (r.textError) throw r.textError;
@@ -47,8 +48,13 @@ export function makeClient(responder, env = TEST_ENV) {
       },
     };
   };
-  const client = new O2Client(loadConfig(env), { fetch: fetchImpl });
-  return { client, calls, handlers: createHandlers(client) };
+  // Retry waits are recorded instead of slept, keeping the suite fast.
+  const sleeps = [];
+  const sleep = async (ms) => {
+    sleeps.push(ms);
+  };
+  const client = new O2Client(loadConfig(env), { fetch: fetchImpl, sleep });
+  return { client, calls, sleeps, handlers: createHandlers(client) };
 }
 
 /** A stream list fixture of the requested size. */

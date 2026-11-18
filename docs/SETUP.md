@@ -29,7 +29,7 @@ read-only role. Use that account below.
 macOS / Linux:
 
 ```bash
-printf 'you@example.com:YOUR_PASSWORD' | base64
+printf 'you@example.com:YOUR_PASSWORD' | base64 | tr -d '\n'
 ```
 
 Windows PowerShell:
@@ -179,7 +179,23 @@ names vary per stream.
 
 **Results come back `truncated`.** The response exceeded 60 KB and rows were
 shed. Select fewer columns, lower `size`, or narrow the window. The
-`truncated` object reports how many rows of the match set you actually got.
+`truncated` object reports how many rows of the match set you actually got, and
+`next_offset` shows where to continue.
+
+**"OpenObserve redirected the request".** This server does not follow redirects.
+Set `O2_BASE_URL` to the final address, for example `https://` instead of
+`http://`. A redirect to a login page means a proxy in front of OpenObserve is
+rejecting the request.
+
+**"non-JSON response".** `O2_BASE_URL` probably points at a login page or a proxy
+rather than the OpenObserve API. Repeat the `curl` check from step 4.
+
+**A value shows as `[REDACTED]`.** It looked like a credential. If you need the
+original text and accept the risk of sending it to the model, set `O2_REDACT=off`.
+
+**Calls fail after several attempts.** Transient failures are retried twice by
+default within `O2_TIMEOUT_MS`. Set `O2_MAX_RETRIES=0` to see the first failure
+immediately.
 
 **Enable debug output.** Set `O2_DEBUG=1` to print the resolved configuration
 (credential redacted) to stderr at startup.

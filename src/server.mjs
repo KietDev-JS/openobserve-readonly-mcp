@@ -16,6 +16,11 @@ const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 
 export const SERVER_INFO = { name: PKG.name, version: PKG.version };
 
+/** Workflow guidance returned to the client during initialize. */
+export const INSTRUCTIONS =
+  'Read-only access to OpenObserve. Call o2_list_streams to find a stream, o2_stream_schema to learn its columns, ' +
+  'then o2_search with a double-quoted stream name. Page through results with offset and next_offset.';
+
 const ALLOWED_ARGS = new Map(TOOLS.map((t) => [t.name, new Set(Object.keys(t.inputSchema.properties))]));
 
 /**
@@ -48,28 +53,37 @@ export function checkArguments(name, args) {
  */
 export function createServer(client, send) {
   const handlers = createHandlers(client);
+  /** Running tool calls by request id, so notifications/cancelled can stop them. */
+  const inFlight = new Map();
 
-  async function callTool(params) {
+  async function callTool(params, signal) {
     const name = params?.name;
     const impl = Object.hasOwn(handlers, name) ? handlers[name] : undefined;
     if (!impl) {
       return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
     }
     try {
-      const result = await impl(checkArguments(name, params.arguments));
+      const result = await impl(checkArguments(name, params.arguments), { signal });
       return { content: [{ type: 'text', text: serializeBounded(result) }] };
     } catch (e) {
       // Validation and upstream failures are tool-level results, not protocol
       // errors: the model should see them and can correct its next call.
       const expected = e instanceof ToolError || e instanceof SqlError || e instanceof O2Error;
       const text = expected ? e.message : `Unexpected error: ${e?.message || e}`;
-      return { isError: true, content: [{ type: 'text', text }] };
+      return { isError: true, content: [{ type: 'text', text: client.scrub(text) }] };
     }
   }
 
   return async function handle(msg) {
     const { id, method, params } = msg ?? {};
     const isRequest = id !== undefined && id !== null;
+
+    if (method === 'notifications/cancelled') {
+      inFlight.get(params?.requestId)?.abort();
+      return undefined;
+    }
+    // Notifications (no id) are never answered, per JSON-RPC.
+    if (!isRequest) return undefined;
 
     try {
       switch (method) {
@@ -81,6 +95,7 @@ export function createServer(client, send) {
               protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
               capabilities: { tools: {} },
               serverInfo: SERVER_INFO,
+              instructions: INSTRUCTIONS,
             },
           });
         }
@@ -88,18 +103,23 @@ export function createServer(client, send) {
           return send({ id, result: {} });
         case 'tools/list':
           return send({ id, result: { tools: TOOLS } });
-        case 'tools/call':
-          return send({ id, result: await callTool(params) });
-        default:
-          // Notifications (no id) are never answered, per JSON-RPC.
-          if (isRequest) {
-            send({ id, error: { code: -32601, message: `Method not found: ${method}` } });
+        case 'tools/call': {
+          const controller = new AbortController();
+          inFlight.set(id, controller);
+          try {
+            const result = await callTool(params, controller.signal);
+            // The client has abandoned a cancelled request and expects no reply.
+            if (!controller.signal.aborted) send({ id, result });
+          } finally {
+            inFlight.delete(id);
           }
+          return undefined;
+        }
+        default:
+          return send({ id, error: { code: -32601, message: `Method not found: ${method}` } });
       }
     } catch (e) {
-      if (isRequest) {
-        send({ id, error: { code: -32603, message: String(e?.message || e) } });
-      }
+      return send({ id, error: { code: -32603, message: client.scrub(e?.message || e) } });
     }
   };
 }
